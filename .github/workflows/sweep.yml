@@ -1,0 +1,46 @@
+name: BCN rental sweep
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"        # every 2 hours (UTC), free-tier friendly
+  workflow_dispatch:              # manual "Run workflow" button on GitHub
+  repository_dispatch:            # Phase 2: Telegram /sweep triggers this
+    types: [telegram-sweep]
+
+# allow the job to commit the updated dedupe memory back to the repo
+permissions:
+  contents: write
+
+concurrency:                      # never let two sweeps overlap
+  group: rental-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet curl_cffi beautifulsoup4
+
+      - name: Run sweep
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SOURCES: "-idealista,-fotocasa"   # datacenter IP: these two stay on the Mac
+          STATE_FILE: state.cloud.json       # cloud keeps its own memory
+          MAX_MSGS_PER_RUN: "12"
+        run: python bot.py
+
+      - name: Persist dedupe memory
+        run: |
+          git config user.name  "rental-bot"
+          git config user.email "rental-bot@users.noreply.github.com"
+          git add state.cloud.json
+          git commit -m "update dedupe memory [skip ci]" || echo "no changes"
+          git push

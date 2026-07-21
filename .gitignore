@@ -1,0 +1,8 @@
+# NEVER commit secrets or local state
+.env
+state.json
+state.json.bak*
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
