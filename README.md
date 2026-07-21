@@ -1,13 +1,36 @@
-# BCN long-term rental bot
+# BuscPiso Bot 🏠
 
-Watches Barcelona city for **long-term** rentals matching:
+Your Barcelona flat-hunting bot. Watches rental agencies (inmobiliarias) and
+portals for flats matching **your** criteria and sends every new one to your
+Telegram (works great in a group with your partner). Expired, seasonal,
+touristic and shared listings are filtered out automatically.
 
-- ≤ €1000/month · ≥ 30 m² · studio or 1 bedroom
-- **no seasonal / touristic / temporary (<1 year) / shared** listings
+Free to run (GitHub Actions + your Mac for the bot-hostile portals), zero AI
+tokens — all filtering is deterministic. MIT licensed.
 
-New matches arrive on **Telegram** as links. Zero AI tokens — all filtering is
-deterministic. One Python file ([bot.py](bot.py)) runs either as a **Pipedream
-cloud workflow** (recommended, no computer needed) or locally.
+## Configure it for you
+
+```bash
+python bot.py --setup
+```
+
+An interactive wizard asks your criteria and writes `config.json`:
+
+| Setting | What it controls |
+|---|---|
+| `max_price` / `min_size` / `max_rooms` | your non-negotiables (rooms: 0 = studio) |
+| `rental_type` | `long_term` (1+ year contracts only) or `any` |
+| `zones` | limit to barrios, e.g. `["gracia", "eixample"]` — empty = all BCN |
+| `require_furnished` | only listings that mention furnished |
+| `pets_info` | adds a 🐾 tag when a listing says pets are allowed |
+| `avoid_platforms` | short-stay platforms to always skip (Uniplaces, Spotahome…) |
+| `avoid_keywords` | your personal deal-breakers, e.g. `"sin ascensor"` |
+
+Commit + push `config.json` and the cloud runs use it too. Env vars
+(`MAX_PRICE`, `MIN_SIZE`, `MAX_ROOMS`, `RENTAL_TYPE`) override the file.
+
+See [SETUP-CLOUD.md](SETUP-CLOUD.md) for the free 24/7 cloud setup
+(GitHub Actions + optional Telegram `/sweep` trigger via Cloudflare Worker).
 
 ## Sources (agencies first, then portals)
 

@@ -16,7 +16,9 @@ PIPEDREAM: paste this whole file into a Python code step. Trigger: Schedule
 (every 5 hours). Add a Data Store prop named "data_store" and set env vars
 TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID. Done.
 
-LOCAL:  bot.py [--dry-run | --chat-id | --test]
+LOCAL:  bot.py [--setup | --dry-run | --chat-id | --test]
+        --setup = interactive wizard that writes config.json (your criteria:
+        price, size, rooms, zones, furnished, pets, rental type, deal-breakers)
 """
 import json
 import os
@@ -31,18 +33,63 @@ from typing import List, Optional
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 
-# ----------------------------- criteria ------------------------------------
-MAX_PRICE = int(os.environ.get("MAX_PRICE", "1000"))   # EUR / month
-MIN_SIZE = int(os.environ.get("MIN_SIZE", "30"))       # m2
-MAX_ROOMS = int(os.environ.get("MAX_ROOMS", "1"))      # 0 = studio, 1 = 1 bed
-MAX_MSGS_PER_RUN = int(os.environ.get("MAX_MSGS_PER_RUN", "30"))  # Telegram flood safety
+# ----------------------------- configuration --------------------------------
+# All user preferences live in config.json (create/update it interactively
+# with `bot.py --setup`). Env vars override — that's how cloud runs tweak
+# things without touching the file.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+DEFAULT_CONFIG = {
+    "max_price": 1000,           # EUR / month
+    "min_size": 30,              # m2
+    "max_rooms": 1,              # 0 = studio only, 1 = up to 1 bedroom, ...
+    "rental_type": "long_term",  # "long_term" (>= 1 year only) or "any"
+    "zones": [],                 # e.g. ["gracia", "eixample"]; [] = anywhere in BCN
+    "require_furnished": False,  # True = only listings that mention furnished
+    "pets_info": True,           # tag listings that mention pets are allowed
+    "avoid_platforms": [         # short/mid-term aggregators to always skip
+        "uniplaces", "renteazily", "spotahome", "housinganywhere", "badi"],
+    "avoid_keywords": [],        # personal deal-breakers, plain text
+}
+
+
+def load_config() -> dict:
+    cfg = dict(DEFAULT_CONFIG)
+    path = os.path.join(BASE_DIR, "config.json")
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                cfg.update(json.load(f))
+        except Exception as e:
+            print("config.json ignored (%s)" % e, file=sys.stderr)
+    for env, key in (("MAX_PRICE", "max_price"), ("MIN_SIZE", "min_size"),
+                     ("MAX_ROOMS", "max_rooms"), ("RENTAL_TYPE", "rental_type")):
+        if os.environ.get(env):
+            v = os.environ[env]
+            cfg[key] = int(v) if v.isdigit() else v
+    return cfg
+
+
+CFG = load_config()
+MAX_PRICE = int(CFG["max_price"])
+MIN_SIZE = int(CFG["min_size"])
+MAX_ROOMS = int(CFG["max_rooms"])
+LONG_TERM_ONLY = CFG.get("rental_type", "long_term") != "any"
+MAX_MSGS_PER_RUN = int(os.environ.get("MAX_MSGS_PER_RUN", "30"))  # TG flood safety
 MAX_SEEN_IDS = 1500                                    # dedupe memory cap
 # check each NEW listing's detail page and drop expired/rented ones
 VERIFY_ALIVE = os.environ.get("VERIFY_ALIVE", "1") != "0"
 
-# Seasonal / temporary / touristic / shared markers. Screened against the whole
-# card blob (title + description + badges/labels + advertiser name).
-BLACKLIST = [
+
+def _norm(s: str) -> str:
+    """lowercase + strip accents, for zone matching (Gràcia == gracia)."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", (s or "").lower())
+                   if unicodedata.category(c) != "Mn")
+
+
+# Seasonal / temporary / touristic markers (skipped if rental_type == "any").
+SEASONAL_PATTERNS = [
     r"temporada", r"temporal",
     # month-capped contracts (the 11-month seasonal loophole and friends);
     # 12+ months is a normal yearly lease so we only match 1-11.
@@ -54,13 +101,40 @@ BLACKLIST = [
     r"por\s*meses", r"mes\s*a\s*mes", r"per\s*mesos",
     r"vacacional", r"tur[ií]stic",
     r"short[\s-]*term", r"mid[\s-]*term", r"seasonal", r"month[\s-]*to[\s-]*month",
+]
+# Shared flats / rooms — always unwanted (this bot finds whole homes).
+SHARED_PATTERNS = [
     r"compartid", r"compartit", r"co-?living",
     r"habitaci[oó]n\s+en\s+piso", r"room\s+in\s+a",
-    # short/mid-term rental platforms (temporary-stock aggregators / poor rep)
-    r"uniplace", r"rente\s*az[iy]ly", r"rente\s*asily", r"spotahome",
-    r"housing\s*anywhere", r"housanywhere", r"badi\b", r"spot\s*a\s*home",
 ]
-BLACKLIST_RE = re.compile("|".join(BLACKLIST), re.IGNORECASE)
+# Known spelling variants of avoidable platforms.
+PLATFORM_PATTERNS = {
+    "uniplaces": r"uniplace",
+    "renteazily": r"rente\s*az[iy]ly|rente\s*asily",
+    "spotahome": r"spot\s*a\s*home|spotahome",
+    "housinganywhere": r"housing\s*anywhere|housanywhere",
+    "badi": r"\bbadi\b",
+}
+
+
+def _build_blacklist():
+    pats = list(SHARED_PATTERNS)
+    if LONG_TERM_ONLY:
+        pats += SEASONAL_PATTERNS
+    for p in CFG.get("avoid_platforms") or []:
+        pats.append(PLATFORM_PATTERNS.get(p.lower(), re.escape(p)))
+    for kw in CFG.get("avoid_keywords") or []:
+        pats.append(re.escape(kw))
+    return re.compile("|".join(pats), re.IGNORECASE)
+
+
+BLACKLIST_RE = _build_blacklist()
+FURNISHED_RE = re.compile(r"amueblad|moblat|furnished", re.IGNORECASE)
+PETS_RE = re.compile(
+    r"(se\s+)?(admiten?|aceptan?)\s+mascotas|mascotas\s+(s[ií]|permitidas|bienvenidas)|"
+    r"pet[\s-]*friendly|pets?\s+(allowed|welcome)|apto\s+(para\s+)?mascotas",
+    re.IGNORECASE)
+ZONES_NORM = [_norm(z) for z in (CFG.get("zones") or []) if z]
 
 
 def screen_blob(l) -> str:
@@ -275,10 +349,11 @@ def scrape_idealista() -> List[Listing]:
     # locally with the Safari fingerprint, expected to fail on Pipedream —
     # that failure is isolated and everything else keeps running.
     # NB: adding ?ordenado-por= to this filtered URL returns HTTP 400.
+    lt = ",alquiler-de-larga-temporada" if LONG_TERM_ONLY else ""
     url = (
         "https://www.idealista.com/alquiler-viviendas/barcelona-barcelona/"
-        "con-precio-hasta_{p},metros-cuadrados-mas-de_{s},alquiler-de-larga-temporada/"
-    ).format(p=MAX_PRICE, s=MIN_SIZE)
+        "con-precio-hasta_{p},metros-cuadrados-mas-de_{s}{lt}/"
+    ).format(p=MAX_PRICE, s=MIN_SIZE, lt=lt)
     html = fetch(url, impersonate="safari184")
     out = []
     for art in soup_of(html).select("article.item"):
@@ -341,7 +416,7 @@ def scrape_fotocasa() -> List[Listing]:
                     d.get("unit"), (d.get("unit") or "").lower())
                 age_by_id[rid] = "hace %s %s" % (d["diff"], unit)
         for it in items:
-            if it.get("isTemporaryRental"):    # portal's own seasonal flag
+            if LONG_TERM_ONLY and it.get("isTemporaryRental"):  # seasonal flag
                 continue
             if "IS_SHARED" in (it.get("dynamicFeatures") or []):
                 continue
@@ -461,7 +536,12 @@ def keep(l: Listing) -> bool:
         return False
     if l["rooms"] is not None and l["rooms"] > MAX_ROOMS:
         return False
-    if BLACKLIST_RE.search(screen_blob(l)):
+    blob = screen_blob(l)
+    if BLACKLIST_RE.search(blob):
+        return False
+    if ZONES_NORM and not any(z in _norm(blob) for z in ZONES_NORM):
+        return False           # user restricted the search to specific barrios
+    if CFG.get("require_furnished") and not FURNISHED_RE.search(blob):
         return False
     return True
 
@@ -519,9 +599,10 @@ def format_msg(l: dict) -> str:
                  "%d hab." % rooms if rooms is not None else "? hab.")
     size_txt = "%d m²" % l["size"] if l.get("size") else "? m²"
     age_txt = " · 📅 %s" % l["age"] if l.get("age") else ""
-    return ("🏠 <b>%s</b>\n💶 %s €/mes · 📐 %s · 🛏 %s%s\n🔎 %s\n%s"
+    pets_txt = " · 🐾 mascotas OK" if l.get("pets") else ""
+    return ("🏠 <b>%s</b>\n💶 %s €/mes · 📐 %s · 🛏 %s%s%s\n🔎 %s\n%s"
             % (escape(l.get("title") or ""), l.get("price"), size_txt,
-               rooms_txt, age_txt, l.get("source"), l.get("url")))
+               rooms_txt, age_txt, pets_txt, l.get("source"), l.get("url")))
 
 # ----------------------------- core run ------------------------------------
 
@@ -541,9 +622,12 @@ def run(state: dict, telegram: bool = True) -> dict:
             new = [l for l in kept if l["id"] not in seen]
             for l in new:
                 seen[l["id"]] = now
-                pending.append({k: l.get(k) for k in
-                                ("id", "source", "url", "title", "price",
-                                 "size", "rooms", "age")})
+                rec = {k: l.get(k) for k in
+                       ("id", "source", "url", "title", "price",
+                        "size", "rooms", "age")}
+                if CFG.get("pets_info") and PETS_RE.search(screen_blob(l)):
+                    rec["pets"] = True
+                pending.append(rec)
             log.append("%-20s %3d scraped, %2d match, %2d new"
                        % (scraper.__name__, len(found), len(kept), len(new)))
         except Exception as e:
@@ -601,6 +685,42 @@ def handler(pd):
             "pending": len(result["state"]["pending"])}
 
 
+# ----------------------------- setup wizard --------------------------------
+
+def _ask(prompt, default):
+    raw = input("%s [%s]: " % (prompt, default)).strip()
+    return raw if raw else default
+
+
+def setup_wizard():
+    """Interactive Q&A that writes config.json. Safe to re-run anytime."""
+    print("\n🏠 BuscPiso Bot setup — Enter keeps the [current] value.\n")
+    c = dict(CFG)
+    c["max_price"] = int(_ask("Max price (€/month)", c["max_price"]))
+    c["min_size"] = int(_ask("Min size (m²)", c["min_size"]))
+    c["max_rooms"] = int(_ask("Max bedrooms (0 = studio only)", c["max_rooms"]))
+    c["rental_type"] = "long_term" if _ask(
+        "Long-term (1+ year) only? y/n", "y" if c["rental_type"] != "any" else "n"
+    ).lower().startswith("y") else "any"
+    zones = _ask("Zones/barrios, comma-separated (empty = all Barcelona)",
+                 ",".join(c["zones"]) or "")
+    c["zones"] = [z.strip() for z in zones.split(",") if z.strip()]
+    c["require_furnished"] = _ask(
+        "Only furnished flats? y/n", "y" if c["require_furnished"] else "n"
+    ).lower().startswith("y")
+    c["pets_info"] = _ask(
+        "Tag listings that allow pets? y/n", "y" if c["pets_info"] else "n"
+    ).lower().startswith("y")
+    kws = _ask("Extra deal-breaker keywords, comma-separated (e.g. 'sin ascensor')",
+               ",".join(c["avoid_keywords"]) or "")
+    c["avoid_keywords"] = [k.strip() for k in kws.split(",") if k.strip()]
+    path = os.path.join(BASE_DIR, "config.json")
+    with open(path, "w") as f:
+        json.dump(c, f, indent=2, ensure_ascii=False)
+    print("\nSaved to %s — next run uses these settings." % path)
+    print("(Cloud runs pick it up after you commit & push config.json.)\n")
+
+
 # ----------------------------- local entrypoint ----------------------------
 
 def _load_env():
@@ -623,6 +743,9 @@ def _main():
     args = sys.argv[1:]
     if "--sources" in args:                      # e.g. --sources idealista
         os.environ["SOURCES"] = args[args.index("--sources") + 1]
+    if "--setup" in args:
+        setup_wizard()
+        return
     print("--- run %s ---" % datetime.now().isoformat(timespec="seconds"))
     if "--chat-id" in args:
         chats = {}

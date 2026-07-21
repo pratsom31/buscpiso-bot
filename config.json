@@ -1,0 +1,11 @@
+{
+  "max_price": 1000,
+  "min_size": 30,
+  "max_rooms": 1,
+  "rental_type": "long_term",
+  "zones": [],
+  "require_furnished": false,
+  "pets_info": true,
+  "avoid_platforms": ["uniplaces", "renteazily", "spotahome", "housinganywhere", "badi"],
+  "avoid_keywords": []
+}
