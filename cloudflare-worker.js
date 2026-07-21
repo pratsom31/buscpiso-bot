@@ -33,7 +33,9 @@ export default {
     const cmd = text.split(/\s+/)[0].split("@")[0].toLowerCase();
 
     if (cmd === "/sweep") {
-      const r = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/dispatches`, {
+      // workflow_dispatch endpoint — pairs with the token's Actions:write
+      const r = await fetch(
+        `https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/sweep.yml/dispatches`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
@@ -41,7 +43,7 @@ export default {
           "User-Agent": "bcn-rental-bot",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ event_type: "telegram-sweep" }),
+        body: JSON.stringify({ ref: "main" }),
       });
       await send(env, chat, r.ok
         ? "🔍 Sweep triggered — new agency/portal listings will arrive in ~2–3 min."
@@ -49,11 +51,10 @@ export default {
     } else if (cmd === "/status") {
       let out = "📊 Could not read cloud memory.";
       try {
+        // public repo: the raw CDN needs no auth (cache-bust so it's fresh)
         const raw = await fetch(
-          `https://raw.githubusercontent.com/${env.GITHUB_REPO}/main/state.cloud.json`,
-          { headers: { "User-Agent": "bcn-rental-bot",
-                       "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
-                       "Accept": "application/vnd.github.raw" } });
+          `https://raw.githubusercontent.com/${env.GITHUB_REPO}/main/state.cloud.json?t=${Date.now()}`,
+          { headers: { "User-Agent": "bcn-rental-bot" } });
         const s = await raw.json();
         out = `📊 <b>Cloud status</b>\nQueued to send: ${(s.pending || []).length}\n` +
               `Listings remembered: ${Object.keys(s.seen || {}).length}\n` +
