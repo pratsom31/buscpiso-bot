@@ -2,7 +2,7 @@ name: BCN rental sweep
 
 on:
   schedule:
-    - cron: "0 */2 * * *"        # every 2 hours (UTC), free-tier friendly
+    - cron: "0 */6 * * *"        # every 6 hours (UTC), free-tier friendly
   workflow_dispatch:              # manual "Run workflow" button on GitHub
   repository_dispatch:            # Phase 2: Telegram /sweep triggers this
     types: [telegram-sweep]

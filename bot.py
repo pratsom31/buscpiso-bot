@@ -188,6 +188,20 @@ def card_screen(el) -> str:
     return " ".join(p for p in parts if p)
 
 
+def card_image(el) -> Optional[str]:
+    """First real photo URL from a card element (for the app's swipe cards)."""
+    for img in el.select("img"):
+        for attr in ("src", "data-src", "data-lazy", "data-original"):
+            v = img.get(attr) or ""
+            if v.startswith("http") and not v.endswith(".svg"):
+                return v
+    for node in el.select("[data-image]"):
+        v = node.get("data-image") or ""
+        if v:
+            return ("https:" + v) if v.startswith("//") else v
+    return None
+
+
 class Listing(dict):
     """Keys: id, source, url, title, price, size, rooms, desc."""
 
@@ -216,6 +230,7 @@ def scrape_housfy() -> List[Listing]:
             price=int(amount / 100) if amount else None,   # amount is in cents
             size=p.get("size"), rooms=p.get("numberOfBedrooms"),
             desc=p.get("description") or "",
+            image=(p.get("photos") or [None])[0],
         ))
     return out
 
@@ -255,6 +270,7 @@ def scrape_shbarcelona() -> List[Listing]:
                 else "https://www.shbarcelona.com/apartments-for-rent/long-term",
             title="%s — %s (ref %s)" % (situation or "Piso", zone, it.get("reference")),
             price=it.get("price"), size=it.get("surface"), rooms=rooms, desc=desc,
+            image=((it.get("images") or [{}])[0].get("url")),
         ))
     return out
 
@@ -290,7 +306,7 @@ def scrape_loca() -> List[Listing]:
         out.append(Listing(
             id="loca:%s" % lid, source="Loca Barcelona (agency)",
             url=url, title=title, price=price, size=size, rooms=rooms,
-            desc=text[:600], screen=card_screen(art),
+            desc=text[:600], screen=card_screen(art), image=card_image(art),
         ))
     return out
 
@@ -336,7 +352,7 @@ def scrape_teixidor() -> List[Listing]:
             id="teixidor:%s" % lid, source="Finques Teixidor (agency)",
             url="https://www.finquesteixidor.com" + href,
             title=title, price=price, size=size, rooms=rooms,
-            desc=text[:600], screen=card_screen(block),
+            desc=text[:600], screen=card_screen(block), image=card_image(block),
         ))
     return out
 
@@ -381,7 +397,7 @@ def scrape_idealista() -> List[Listing]:
             id="idealista:%s" % lid, source="Idealista",
             url="https://www.idealista.com" + a["href"],
             title=title, price=price, size=size, rooms=rooms, desc=desc,
-            screen=card_screen(art),
+            screen=card_screen(art), image=card_image(art),
         ))
     return out
 
@@ -433,6 +449,7 @@ def scrape_fotocasa() -> List[Listing]:
                 size=feats.get("surface"), rooms=feats.get("rooms"),
                 desc=desc_by_id.get(pid, ""), age=age_by_id.get(pid),
                 screen=(it.get("publisher") or {}).get("name") or "",
+                image=((it.get("multimedias") or [{}])[0].get("url")),
             ))
         time.sleep(random.uniform(1, 2))
     return out
@@ -466,7 +483,7 @@ def scrape_habitaclia() -> List[Listing]:
         out.append(Listing(
             id="habitaclia:%s" % lid, source="Habitaclia",
             url=href, title=title, price=price, size=size, rooms=rooms, desc=desc,
-            screen=card_screen(art),
+            screen=card_screen(art), image=card_image(art),
         ))
     return out
 
@@ -498,6 +515,7 @@ def scrape_pisos() -> List[Listing]:
             url="https://www.pisos.com" + href,
             title=title, price=price, size=size, rooms=rooms, desc=desc,
             screen=card_screen(div),   # catches the 'Temporada' type badge
+            image=card_image(div),
         ))
     return out
 
@@ -745,6 +763,29 @@ def _main():
         os.environ["SOURCES"] = args[args.index("--sources") + 1]
     if "--setup" in args:
         setup_wizard()
+        return
+    if "--emit" in args:
+        # export current matching listings (full objects) as JSON for the app
+        out_path = args[args.index("--emit") + 1] if len(args) > args.index("--emit") + 1 \
+            and not args[args.index("--emit") + 1].startswith("-") else "listings.json"
+        rows = []
+        for scraper in active_scrapers():
+            try:
+                for l in scraper():
+                    if keep(l):
+                        rows.append({k: l.get(k) for k in (
+                            "id", "source", "url", "title", "price", "size",
+                            "rooms", "image", "age", "pets")})
+            except Exception as e:
+                print("%s: %s" % (scraper.__name__, str(e)[:100]), file=sys.stderr)
+        seen_ids, uniq = set(), []
+        for r in rows:                        # de-dup across sources
+            if r["id"] not in seen_ids:
+                seen_ids.add(r["id"]); uniq.append(r)
+        with open(out_path, "w") as f:
+            json.dump({"generated": datetime.now(timezone.utc).isoformat(),
+                       "count": len(uniq), "listings": uniq}, f, ensure_ascii=False, indent=1)
+        print("wrote %d listings to %s" % (len(uniq), out_path))
         return
     print("--- run %s ---" % datetime.now().isoformat(timespec="seconds"))
     if "--chat-id" in args:
