@@ -54,8 +54,8 @@ short/mid-term, seasonal, compartido, coliving, and short-stay platforms
 are treated as normal yearly leases and pass.
 
 Note on Idealista: it is DataDome-protected, so it works when the bot runs
-locally (Safari TLS fingerprint) but will likely 403 from Pipedream's cloud
-IPs. That failure is isolated — the run continues and you simply don't get
+locally (Safari TLS fingerprint) but will likely 403 from cloud
+(datacenter) IPs. That failure is isolated — the run continues and you simply don't get
 Idealista results in cloud mode.
 
 ## Top-10 inmobiliarias coverage
@@ -85,43 +85,35 @@ Suitelife (expat pricing, all >1000€), Century21/Remax (JS + captcha),
 Finques Chicote / Martell / Garví / Bou / El Pallars (no crawlable catalogue),
 yaencontre (bot-blocked), enalquiler (same Adevinta stock as Fotocasa).
 
-## Deploy on Pipedream (recommended)
+## Deploy on GitHub Actions (free)
+
+The bot runs in the cloud on GitHub Actions, on a schedule you choose. The
+default is **every 6 hours**: change the `cron` line in
+`.github/workflows/sweep.yml` to run it more or less often.
 
 1. **Telegram bot**: message **@BotFather** → `/newbot` → copy the token.
    Then message your new bot anything (so it can reply to you).
 2. **Chat id**: open
    `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser and read
    `"chat":{"id":XXXXXXX}` from the response.
-3. In Pipedream: **New workflow** → trigger **Schedule** → every **5 hours**.
-4. Add a step → **Python** → **Run Python code**, and paste the entire
-   contents of `bot.py`.
-5. In the step's config, add a **Data Store** prop named exactly
-   **`data_store`** (create a new data store when prompted).
-6. In Pipedream **Settings → Environment Variables** add:
-   - `TELEGRAM_BOT_TOKEN` = your token
-   - `TELEGRAM_CHAT_ID` = your chat id (use the **group** id to share with someone)
-   - `SOURCES` = `-idealista` (skip Idealista in the cloud — it blocks
-     datacenter IPs; cover it with local on-demand runs instead, see below)
-   - optional: `MAX_PRICE`, `MIN_SIZE`, `MAX_ROOMS`
-7. **Deploy**, then hit **Send test event** — the first run sends the current
-   matches (capped at 30 messages/run; overflow follows next run).
+3. Fork or copy this repo, then go to **Settings → Secrets and variables →
+   Actions** and add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+4. Open the **Actions** tab, enable workflows, and press **Run workflow** on
+   "BCN rental sweep" to test it. The first run sends the current matches
+   (capped per run; overflow follows next run).
 
-The `# pipedream add-package curl-cffi` / `beautifulsoup4` comments at the top
-of the file tell Pipedream which packages to install — leave them in.
+Dedupe memory lives in `state.cloud.json`, which the workflow commits back to
+the repo after each run. See [SETUP-CLOUD.md](SETUP-CLOUD.md) for the optional
+Telegram `/sweep` trigger via a Cloudflare Worker.
 
-Free-tier fit: 5 runs/day ≈ 150 credit-consuming invocations/month, within
-Pipedream's free daily credit allowance; dedupe state is one small key in one
-data store (id memory pruned to the newest 1500).
+## Split mode: cloud + the Mac for bot-hostile portals
 
-## Split mode: Pipedream + on-demand Idealista from the Mac
-
-The intended setup: Pipedream runs 7 sources every 5 hours with
-`SOURCES=-idealista`, and whenever you feel like sweeping Idealista you
-**double-click `run-idealista.command`** in the bot folder (or run
-`.venv/bin/python bot.py --sources idealista`). Local `.env` already has
-`SOURCES=idealista` so plain local runs never overlap with the cloud ones —
-each side keeps its own dedupe memory, and since the sources don't overlap
-you never get duplicate Telegram messages.
+Idealista and Fotocasa block datacenter IPs, so the cloud run skips them
+(`SOURCES: "-idealista,-fotocasa"` in `sweep.yml`). Cover them from your Mac
+by double-clicking one of the `run-*.command` files in the bot folder, or with
+`.venv/bin/python bot.py --sources idealista`. The cloud and the Mac each keep
+their own dedupe memory, and since their sources don't overlap you never get
+duplicate Telegram messages.
 
 ## Sharing with a partner (group chat)
 
@@ -130,8 +122,8 @@ you never get duplicate Telegram messages.
 3. Send any message in the group, then get the group's chat id with
    `.venv/bin/python bot.py --chat-id` — group ids are **negative** numbers
    (e.g. `-4871...`).
-4. Put that id in `TELEGRAM_CHAT_ID` (both in local `.env` and in Pipedream's
-   env vars). All listings now arrive in the shared group.
+4. Put that id in `TELEGRAM_CHAT_ID` (both in local `.env` and in the repo's
+   Actions secrets). All listings now arrive in the shared group.
 
 ## Run locally instead (optional)
 
@@ -158,12 +150,12 @@ What this cannot catch: ads that are still published but ancient/bait.
 
 ## Notes
 
-- Criteria changes = edit the env vars (Pipedream) or `.env` (local). Delete
-  the `state` key in the data store (or `state.json`) to start fresh.
+- Criteria changes = edit `config.json` (cloud and local) or `.env` (local).
+  Delete `state.cloud.json` (or `state.json` locally) to start fresh.
 - "? hab." in a message means the site didn't state bedrooms on the card
   (common for studios); every other filter still passed.
 - If a scraper errors persistently (site redesign), you'll get a Telegram
   warning when half or more sources fail; single-source failures just appear
-  in the Pipedream run logs.
-- Scrape volume is tiny (~10 requests/5h) and for personal use — keep it that
+  in the Actions run logs.
+- Scrape volume is tiny (about 10 requests per run) and for personal use — keep it that
   way; portals' terms discourage scraping.
